@@ -1,123 +1,124 @@
 import prisma from "../utils/client.js";
 
 /**
- * Retrieves personal data with pagination and search functionality
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
+ * Controller: Get paginated and searchable list of personal data
+ * @async
+ * @function getPersonals
+ * @param {import('express').Request} req - Express request object
+ * @param {import('express').Response} res - Express response object
+ * @returns {Promise<void>}
  */
 export const getPersonals = async (req, res) => {
   try {
-    const paginationParams = extractPaginationParams(req);
-    const searchParams = extractSearchParams(req);
-    
-    const queryOptions = buildQueryOptions(paginationParams, searchParams);
-    const personalData = await fetchPersonalData(queryOptions);
-    
-    sendSuccessResponse(res, personalData, paginationParams.limit);
+    const pagination = extractPaginationParams(req);
+    const search = extractSearchParams(req);
+
+    const queryOptions = buildQueryOptions(pagination, search);
+    const results = await prisma.personaldata.findMany(queryOptions);
+
+    return sendSuccessResponse(res, results, pagination.limit);
   } catch (error) {
-    handleError(res, error);
+    return handleError(res, error);
   }
 };
 
 /**
- * Extracts pagination parameters from request
+ * Extracts pagination parameters from request query
+ * @param {import('express').Request} req
+ * @returns {{ lastId: number, limit: number }}
  */
-const extractPaginationParams = (req) => {
+const extractPaginationParams = (req) => ({
+  lastId: Number(req.query.lastId) || 0,
+  limit: Math.min(Number(req.query.limit) || 10, 100), // protect from large queries
+});
+
+/**
+ * Extracts search query parameter
+ * @param {import('express').Request} req
+ * @returns {{ query: string }}
+ */
+const extractSearchParams = (req) => ({
+  query: req.query.search_query?.trim() || "",
+});
+
+/**
+ * Constructs query options for Prisma
+ * @param {{ lastId: number, limit: number }} pagination
+ * @param {{ query: string }} search
+ * @returns {object}
+ */
+const buildQueryOptions = (pagination, search) => {
+  const where = buildWhereCondition(pagination.lastId, search.query);
+
   return {
-    lastId: parseInt(req.query.lastId) || 0,
-    limit: parseInt(req.query.limit) || 10
+    where,
+    take: pagination.limit,
+    orderBy: { id: "desc" },
   };
 };
 
 /**
- * Extracts search parameters from request
+ * Builds combined filter for search and pagination
+ * @param {number} lastId
+ * @param {string} query
+ * @returns {object}
  */
-const extractSearchParams = (req) => {
-  return {
-    query: req.query.search_query || ""
-  };
-};
+const buildWhereCondition = (lastId, query) => {
+  const conditions = [];
 
-/**
- * Builds query options for database
- */
-const buildQueryOptions = (paginationParams, searchParams) => {
-  const { lastId, limit } = paginationParams;
-  const { query } = searchParams;
-  
-  const searchConditions = buildSearchConditions(query);
-  const whereCondition = buildWhereCondition(lastId, searchConditions);
-  
-  return {
-    where: whereCondition,
-    take: limit,
-    orderBy: { id: "desc" }
-  };
-};
-
-/**
- * Builds search conditions for query
- */
-const buildSearchConditions = (query) => {
-  if (!query) return {};
-  
-  return {
-    OR: [
-      { first_name: { contains: query, mode: 'insensitive' } },
-      { last_name: { contains: query, mode: 'insensitive' } },
-      { email: { contains: query, mode: 'insensitive' } },
-      { gender: { contains: query, mode: 'insensitive' } },
-      { ip_address: { contains: query, mode: 'insensitive' } }
-    ]
-  };
-};
-
-/**
- * Builds complete where condition combining ID filter and search
- */
-const buildWhereCondition = (lastId, searchConditions) => {
-  if (!lastId || Object.keys(searchConditions).length === 0) {
-    return lastId ? { id: { lt: lastId } } : searchConditions;
+  if (lastId > 0) {
+    conditions.push({ id: { lt: lastId } });
   }
-  
-  return {
-    AND: [
-      { id: { lt: lastId } },
-      searchConditions
-    ]
-  };
+
+  if (query) {
+    conditions.push({
+      OR: [
+        { first_name: { contains: query, mode: "insensitive" } },
+        { last_name: { contains: query, mode: "insensitive" } },
+        { email: { contains: query, mode: "insensitive" } },
+        { gender: { contains: query, mode: "insensitive" } },
+        { ip_address: { contains: query, mode: "insensitive" } },
+      ],
+    });
+  }
+
+  if (conditions.length === 0) return {};
+  if (conditions.length === 1) return conditions[0];
+
+  return { AND: conditions };
 };
 
 /**
- * Fetches personal data from database
- */
-const fetchPersonalData = async (queryOptions) => {
-  return await prisma.personaldata.findMany(queryOptions);
-};
-
-/**
- * Sends success response with pagination metadata
+ * Sends a formatted successful JSON response
+ * @param {import('express').Response} res
+ * @param {Array} data
+ * @param {number} limit
  */
 const sendSuccessResponse = (res, data, limit) => {
-  res.json({
+  const lastId = data?.length ? data[data.length - 1].id : 0;
+
+  res.status(200).json({
+    success: true,
     result: data,
-    lastId: data.length > 0 ? data[data.length - 1].id : 0,
-    hasMore: data.length >= limit
+    lastId,
+    hasMore: data.length >= limit,
   });
 };
 
 /**
- * Handles errors with appropriate response
+ * Handles and sends standardized error responses
+ * @param {import('express').Response} res
+ * @param {Error} error
  */
 const handleError = (res, error) => {
-  console.error("Error fetching personal data:", error);
-  
-  const errorMessage = process.env.NODE_ENV === 'development' 
-    ? error.message 
-    : 'Internal server error';
-    
+  console.error("[PersonalDataController] Error:", error);
+
   res.status(500).json({
+    success: false,
     error: "Failed to fetch personal data",
-    message: errorMessage
+    message:
+      process.env.NODE_ENV === "development"
+        ? error.message
+        : "Internal server error",
   });
 };
